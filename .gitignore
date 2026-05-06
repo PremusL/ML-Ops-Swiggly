@@ -1,0 +1,21 @@
+# Data and models
+data/
+models/
+mlruns/
+
+# Hidden folders and files
+.*/
+.DS_Store
+.python-version
+
+# Package management
+uv.lock
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Archives
+*.zip
+*.tar.gz
