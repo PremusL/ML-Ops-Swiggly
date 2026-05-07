@@ -1,48 +1,27 @@
-"""
-Swiggly ML Pipeline — Metaflow Flow
-
-Step 1 (data_tests):      Data preprocessing + Great Expectations validation
-Step 2 (train_model):     LightGBM model training → serialized model artifact
-Step 3 (register_model):  Version the model with MLflow tracking
-
-Run locally:
-    uv run python flow.py --environment=pypi run
-
-Per-step dependencies are declared via @pypi decorators and also documented
-in requirements_data_tests.txt / requirements_train_model.txt /
-requirements_register_model.txt.
-"""
-
 from metaflow import FlowSpec, step, pypi
 
 
-class SwigglyFlow(FlowSpec):
+class SwiggyFlow(FlowSpec):
     """
     End-to-end pipeline for the Swiggly restaurant dataset.
-
-    1. data_tests      – reduce, sample, and validate with Great Expectations
-    2. train_model     – train a LightGBM regressor and save the model artifact
-    3. register_model  – version the model in MLflow (local tracking store)
+    1. data_tests      - reduce, sample, and validate with Great Expectations
+    2. train_model     - train a LightGBM regressor and save the model artifact
+    3. test_robustness - evaluate the model for robustness against anomalies/perturbations
+    4. register_model  - version the model in MLflow (local tracking store)
     """
 
-    # ------------------------------------------------------------------
     # start
-    # ------------------------------------------------------------------
     @step
     def start(self):
-        """Entry point — kicks off the pipeline."""
-        print("Starting Swiggly ML pipeline")
+        print("Starting Swiggy ML pipeline")
         self.next(self.data_tests)
 
-    # ------------------------------------------------------------------
     # Step 1: Data preprocessing & Great Expectations tests
-    # ------------------------------------------------------------------
     @pypi(
         packages={
-            "pandas": ">=2.0.0",
-            "great-expectations": ">=1.0.0",
-        }
-    )
+            "pandas": "2.3.3",
+            "great-expectations": "1.16.1",
+        })
     @step
     def data_tests(self):
         """
@@ -77,19 +56,15 @@ class SwigglyFlow(FlowSpec):
 
         run_ge_threshold_tests(min_rating, max_rating, rating_count_set)
 
-        print("\n✅ All data tests passed.")
+        print("\nAll data tests passed.")
         self.next(self.train_model)
 
-    # ------------------------------------------------------------------
-    # Step 2: Model training
-    # ------------------------------------------------------------------
     @pypi(
         packages={
-            "pandas": ">=2.0.0",
-            "lightgbm": ">=4.0.0",
-            "scikit-learn": ">=1.3.0",
-        }
-    )
+            "pandas": "2.3.3",
+            "lightgbm": "4.6.0",
+            "scikit-learn": "1.8.0",
+        })
     @step
     def train_model(self):
         """
@@ -109,25 +84,90 @@ class SwigglyFlow(FlowSpec):
         self.test_metrics = results["test_metrics"]
         self.feature_names = results["feature_names"]
         self.model_path = results["model_path"]
+        self.top_cuisines = results["top_cuisines"]
 
         with open(self.model_path, "r") as f:
             self.model_artifact = f.read()
 
-        print(f"\n📦 Model artifact saved to: {self.model_path}")
+        print(f"\nModel artifact saved to: {self.model_path}")
         print(f"   Format: LightGBM native text (no pickle)")
         print(f"   Size: {len(self.model_artifact):,} characters")
 
+        self.next(self.test_robustness)
+
+    # Step 3: Model robustness testing
+    @pypi(
+        packages={
+            "pandas": "2.3.3",
+            "lightgbm": "4.6.0",
+            "numpy": "2.4.4",
+            "scikit-learn": "1.8.0",
+        })
+    @step
+    def test_robustness(self):
+
+        import lightgbm as lgb
+        import pandas as pd
+        import numpy as np
+        from train_model import make_features
+        
+        print("\nTesting Model Robustness...")
+        
+        booster = lgb.Booster(model_file=self.model_path)
+        
+        # Load test data and engineer baseline features
+        df_test = pd.read_csv("data/swiggy_test_sample.csv")
+        X_test, _, _ = make_features(df_test, top_cuisines=self.top_cuisines, fit=False)
+        baseline_preds = booster.predict(X_test)
+        
+        # --------------------------------------------------------------
+        # Test A: Extreme Outlier Bounds
+        # --------------------------------------------------------------
+        print("\n--- Test A: Extreme Outliers ---")
+        print("Expectation: Model predictions should remain within the valid [1.0, 5.0]")
+        print("range even if the cost is absurdly high (e.g., ₹10,000,000).")
+        
+        X_extreme = X_test.copy()
+        X_extreme["cost"] = 10000000
+        extreme_preds = booster.predict(X_extreme)
+        
+        out_of_bounds = np.sum((extreme_preds < 1.0) | (extreme_preds > 5.0))
+        print(f"Predictions out of bounds [1.0, 5.0]: {out_of_bounds} / {len(extreme_preds)}")
+        
+        if out_of_bounds == 0:
+            print("Passed outlier robustness test.")
+        else:
+            print(f"Failed outlier robustness test. Max pred: {np.max(extreme_preds):.2f}, Min pred: {np.min(extreme_preds):.2f}")
+            
+        # --------------------------------------------------------------
+        # Test B: Invariance to Price Inflation
+        # --------------------------------------------------------------
+        print("\n--- Test B: Invariance to Minor Perturbations ---")
+        print("Expectation: Increasing the cost uniformly by 20% should not shift")
+        print("the predicted rating by more than 0.2 stars on average.")
+        
+        X_perturbed = X_test.copy()
+        X_perturbed["cost"] = X_perturbed["cost"] * 1.20
+        perturbed_preds = booster.predict(X_perturbed)
+        
+        mean_diff = np.mean(np.abs(perturbed_preds - baseline_preds))
+        print(f"Mean absolute difference in predictions: {mean_diff:.4f} stars")
+        
+        if mean_diff < 0.2:
+            print("Passed perturbation robustness test.")
+        else:
+            print("Failed perturbation robustness test.")
+            
         self.next(self.register_model)
 
     # ------------------------------------------------------------------
-    # Step 3: Model versioning with MLflow
+    # Step 4: Model versioning with MLflow
     # ------------------------------------------------------------------
     @pypi(
         packages={
-            "mlflow": ">=2.0.0",
-            "lightgbm": ">=4.0.0",
-        }
-    )
+            "mlflow": "3.12.0",
+            "lightgbm": "4.6.0",
+        })
     @step
     def register_model(self):
         """
@@ -174,7 +214,7 @@ class SwigglyFlow(FlowSpec):
             self.mlflow_run_id = run.info.run_id
             self.mlflow_experiment_id = run.info.experiment_id
 
-        print(f"\n📋 Model registered in MLflow")
+        print(f"\nModel registered in MLflow")
         print(f"   Run ID       : {self.mlflow_run_id}")
         print(f"   Experiment   : swiggly-rating-predictor")
         print(f"   Tracking URI : file:./mlruns")
@@ -188,10 +228,10 @@ class SwigglyFlow(FlowSpec):
     @step
     def end(self):
         """Pipeline complete."""
-        print(f"\n🏁 Swiggly pipeline complete.")
+        print(f"\nSwiggly pipeline complete.")
         print(f"   Model artifact : {self.model_path}")
         print(f"   MLflow run ID  : {self.mlflow_run_id}")
 
 
 if __name__ == "__main__":
-    SwigglyFlow()
+    SwiggyFlow()

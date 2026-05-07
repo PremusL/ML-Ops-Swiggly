@@ -124,10 +124,15 @@ def create_random_test_sample():
 
     sampled_df = df_test.groupby('city').sample(frac=0.20)
     
+    # Remove the test data from the remaining sample
+    remaining_df = df_test.drop(sampled_df.index)
+    remaining_df.to_csv('data/swiggy_remaining_sample.csv', index=False)
+    
     output_file = 'data/swiggy_test_sample.csv'
     sampled_df.to_csv(output_file, index=False)
 
-    print(f"Sampled dataset columns: {list(sampled_df.columns)}, {len(sampled_df)}")
+    print(f"Sampled test dataset columns: {list(sampled_df.columns)}, {len(sampled_df)}")
+    print(f"Remaining training dataset size: {len(remaining_df)}")
 
 
 def run_ge_threshold_tests(min_rating, max_rating, rating_count_set):

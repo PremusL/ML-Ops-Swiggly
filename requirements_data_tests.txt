@@ -1,3 +1,0 @@
-# Dependencies for the data_tests step
-pandas>=2.0.0
-great-expectations>=1.0.0

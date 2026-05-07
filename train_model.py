@@ -38,9 +38,6 @@ RATING_COUNT_ORDER = {
 TOP_N_CUISINES = 30  # keep the 30 most frequent individual cuisines
 
 
-# ---------------------------------------------------------------------------
-# Feature engineering
-# ---------------------------------------------------------------------------
 
 def _extract_individual_cuisines(series: pd.Series) -> list[str]:
     """Return a sorted list of the top-N individual cuisine tokens."""
@@ -52,7 +49,7 @@ def _extract_individual_cuisines(series: pd.Series) -> list[str]:
     return [c for c, _ in counter.most_common(TOP_N_CUISINES)]
 
 
-def engineer_features(
+def make_features(
     df: pd.DataFrame,
     top_cuisines: list[str] | None = None,
     fit: bool = True,
@@ -77,14 +74,11 @@ def engineer_features(
 
     # 1. Cost (numeric, fill nulls with median)
     features["cost"] = df["cost"].fillna(df["cost"].median())
-
-    # 2. Rating count → ordinal
+    # 2. Rating count: ordinal
     features["rating_count_ordinal"] = df["rating_count"].map(RATING_COUNT_ORDER).fillna(0).astype(int)
-
-    # 3. City → LightGBM categorical (integer codes)
+    # 3. City: LightGBM categorical (integer codes)
     features["city"] = df["city"].astype("category").cat.codes
-
-    # 4. Cuisine → multi-hot encoding of top-N tokens
+    # 4. Cuisine: multi-hot encoding of top-N tokens
     if fit:
         top_cuisines = _extract_individual_cuisines(df["cuisine"])
     assert top_cuisines is not None
@@ -124,9 +118,7 @@ def evaluate(y_true: np.ndarray, y_pred: np.ndarray, label: str = "") -> dict:
 # ---------------------------------------------------------------------------
 
 def main():
-    # ------------------------------------------------------------------
-    # 1. Load data
-    # ------------------------------------------------------------------
+
     print("Loading training data ...")
     df_train_full = pd.read_csv(TRAIN_DATA_PATH)
 
@@ -134,26 +126,17 @@ def main():
     df_train_full = df_train_full[pd.to_numeric(df_train_full[TARGET], errors="coerce").notna()]
     df_train_full[TARGET] = df_train_full[TARGET].astype(float)
 
-    print(f"  Rows after cleaning: {len(df_train_full)}")
+    print(f"Rows after cleaning: {len(df_train_full)}")
 
-    # ------------------------------------------------------------------
-    # 2. Feature engineering (fit on full training data)
-    # ------------------------------------------------------------------
-    X_all, feature_names, top_cuisines = engineer_features(df_train_full, fit=True)
+    X_all, feature_names, top_cuisines = make_features(df_train_full, fit=True)
     y_all = df_train_full[TARGET].values
 
-    # ------------------------------------------------------------------
-    # 3. Train / validation split (80/20)
-    # ------------------------------------------------------------------
     X_train, X_val, y_train, y_val = train_test_split(
-        X_all, y_all, test_size=0.20, random_state=42,
+        X_all, y_all, test_size=0.20, random_state=2000,
     )
-    print(f"  Train size : {len(X_train)}")
-    print(f"  Val size   : {len(X_val)}")
+    print(f"Train size : {len(X_train)}")
+    print(f"Val size   : {len(X_val)}")
 
-    # ------------------------------------------------------------------
-    # 4. Train LightGBM
-    # ------------------------------------------------------------------
     print("\nTraining LightGBM regressor ...")
 
     model_params = {
@@ -165,7 +148,7 @@ def main():
         "colsample_bytree": 0.8,
         "reg_alpha": 0.1,
         "reg_lambda": 0.1,
-        "random_state": 42,
+        "random_state": 2000,
     }
 
     model = lgb.LGBMRegressor(**model_params, verbose=-1)
@@ -176,29 +159,23 @@ def main():
         callbacks=[lgb.early_stopping(50, verbose=True), lgb.log_evaluation(100)],
     )
 
-    # ------------------------------------------------------------------
-    # 5. Evaluate on validation set
-    # ------------------------------------------------------------------
+    # Evaluate on validation set
     y_val_pred = model.predict(X_val)
     val_metrics = evaluate(y_val, y_val_pred, label="Validation")
 
-    # ------------------------------------------------------------------
-    # 6. Evaluate on test set
-    # ------------------------------------------------------------------
+    # Evaluate on test set
     print("\nLoading test data ...")
     df_test = pd.read_csv(TEST_DATA_PATH)
     df_test = df_test[pd.to_numeric(df_test[TARGET], errors="coerce").notna()]
     df_test[TARGET] = df_test[TARGET].astype(float)
 
-    X_test, _, _ = engineer_features(df_test, top_cuisines=top_cuisines, fit=False)
+    X_test, _, _ = make_features(df_test, top_cuisines=top_cuisines, fit=False)
     y_test = df_test[TARGET].values
 
     y_test_pred = model.predict(X_test)
     test_metrics = evaluate(y_test, y_test_pred, label="Test")
 
-    # ------------------------------------------------------------------
-    # 7. Feature importance
-    # ------------------------------------------------------------------
+    # Feature importance
     importance = pd.Series(
         model.feature_importances_, index=feature_names
     ).sort_values(ascending=False)
@@ -206,9 +183,7 @@ def main():
     print("\nTop 15 feature importances (split count):")
     print(importance.head(15).to_string())
 
-    # ------------------------------------------------------------------
-    # 8. Save model
-    # ------------------------------------------------------------------
+    # Save model
     os.makedirs(MODEL_OUTPUT_DIR, exist_ok=True)
     model.booster_.save_model(MODEL_OUTPUT_PATH)
     print(f"\nModel saved to {MODEL_OUTPUT_PATH}")
@@ -219,6 +194,7 @@ def main():
         "test_metrics": test_metrics,
         "feature_names": feature_names,
         "model_path": MODEL_OUTPUT_PATH,
+        "top_cuisines": top_cuisines,
     }
 
 

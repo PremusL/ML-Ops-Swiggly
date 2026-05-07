@@ -1,0 +1,4 @@
+# Dependencies for the train_model step
+pandas==2.3.3
+lightgbm==4.6.0
+scikit-learn==1.8.0

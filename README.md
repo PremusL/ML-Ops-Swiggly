@@ -6,7 +6,7 @@ Either using [UV](https://docs.astral.sh/uv/#highlights)
 > uv run main.py
 
 Or:
-> pip install -r requirements.txt 
+> pip install -r requirements/requirements.txt 
 > python main.py
 
 To run the project in a Docker container:
@@ -50,4 +50,34 @@ Unit test for threshold values check if the values in the rating column are with
 Unit test for rating count checks if all the rating count values in the remaining sample are within the unique set of rating count values from the representative sample, because there should be no new rating count categories in the remaining sample because the representative sample should capture all the rating count categories. There is no threshold on this test aswell because the rating count categories should be consistent throughout the dataset.
 
 
-# ML-Ops-Swiggly
+
+### Swiggly ML Pipeline — Metaflow Flow
+
+Step 1 (data_tests):      Data preprocessing + Great Expectations validation
+Step 2 (train_model):     LightGBM model training → serialized model artifact
+Step 3 (test_robustness): Validate model robustness under perturbations/extreme inputs
+Step 4 (register_model):  Version the model with MLflow tracking
+
+Run locally:
+    uv run python flow.py --environment=pypi run
+
+Per-step dependencies are declared via @pypi decorators and also documented
+in requirements/requirements_data_tests.txt / requirements/requirements_train_model.txt /
+requirements/requirements_register_model.txt.
+
+
+Validate the robustness of the trained model.
+        
+Reasoning / Expectation:
+We define robustness as the model's ability to handle severe outliers
+and minor perturbations gracefully. In a production environment, erroneous
+data entry (e.g., an extra zero in cost, inflating cost=1,000 to cost=10,000)
+        is common. A robust restaurant rating predictor should not extrapolate
+        wildly into impossible rating ranges (e.g., > 5.0 or < 1.0) for extreme
+        outliers, as its target domain is strictly [1.0, 5.0].
+        
+        Furthermore, we expect that reasonable perturbations (e.g., a uniform 20%
+        price inflation) should not drastically alter the fundamental quality
+        prediction of the restaurant, as rating is more heavily influenced by
+        cuisine, city, and rating counts.
+        """

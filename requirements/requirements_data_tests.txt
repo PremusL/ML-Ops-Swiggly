@@ -1,0 +1,3 @@
+# Dependencies for the data_tests step
+pandas==2.3.3
+great-expectations==1.16.1
