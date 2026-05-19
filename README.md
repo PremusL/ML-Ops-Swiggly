@@ -87,5 +87,10 @@ data entry (e.g., an extra zero in cost, inflating cost=1,000 to cost=10,000)
         (human-readable, language-agnostic, no pickle) and stored at
         models/rating_predictor_lr<lr>_md<md>_est<est>.txt.
 
+To run the whole flow with onnx format:
 
-uv run python flow.py --environment=pypi run --model_format onnx
+> uv run python flow.py --environment=pypi run --model_format onnx
+
+To run the whole flow with text format:
+
+> uv run python flow.py --environment=pypi run --model_format text
