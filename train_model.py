@@ -21,7 +21,6 @@ from sklearn.metrics import mean_absolute_error, root_mean_squared_error, r2_sco
 TRAIN_DATA_PATH = "data/swiggy_remaining_sample.csv"
 TEST_DATA_PATH = "data/swiggy_test_sample.csv"
 MODEL_OUTPUT_DIR = "models"
-MODEL_OUTPUT_PATH = os.path.join(MODEL_OUTPUT_DIR, "rating_predictor.txt")
 
 TARGET = "rating"
 
@@ -117,10 +116,17 @@ def evaluate(y_true: np.ndarray, y_pred: np.ndarray, label: str = "") -> dict:
 # Main training pipeline
 # ---------------------------------------------------------------------------
 
-def main():
+def main(induce_error: bool = False, model_format: str = "text"):
 
     print("Loading training data ...")
     df_train_full = pd.read_csv(TRAIN_DATA_PATH)
+
+    if induce_error:
+        print("ARTIFICIAL ERROR INDUCED: Subsetting training data to 500 rows...")
+        df_train_full = df_train_full.head(500)
+
+    if len(df_train_full) < 1000:
+        raise ValueError(f"Insufficient training data: {len(df_train_full)} rows (requires >= 1000)")
 
     # Drop rows where the target itself is missing or non-numeric
     df_train_full = df_train_full[pd.to_numeric(df_train_full[TARGET], errors="coerce").notna()]
@@ -185,15 +191,38 @@ def main():
 
     # Save model
     os.makedirs(MODEL_OUTPUT_DIR, exist_ok=True)
-    model.booster_.save_model(MODEL_OUTPUT_PATH)
-    print(f"\nModel saved to {MODEL_OUTPUT_PATH}")
+    if model_format == "onnx":
+        import onnxmltools
+        from onnxmltools.convert.common.data_types import FloatTensorType
+
+        num_features = X_train.shape[1]
+        initial_types = [('input', FloatTensorType([None, num_features]))]
+        
+        onnx_model = onnxmltools.convert_lightgbm(model, initial_types=initial_types)
+        
+        model_filename = f"rating_predictor_lr{model_params['learning_rate']}_md{model_params['max_depth']}_est{model_params['n_estimators']}.onnx"
+        model_output_path = os.path.join(MODEL_OUTPUT_DIR, model_filename)
+        
+        with open(model_output_path, "wb") as f:
+            f.write(onnx_model.SerializeToString())
+        print(f"\nModel saved to {model_output_path} (ONNX format)")
+    else:
+        model_filename = f"rating_predictor_lr{model_params['learning_rate']}_md{model_params['max_depth']}_est{model_params['n_estimators']}.txt"
+        model_output_path = os.path.join(MODEL_OUTPUT_DIR, model_filename)
+        model.booster_.save_model(model_output_path)
+        print(f"\nModel saved to {model_output_path} (native text format)")
+
+    print("\nAvailable models:")
+    for f in sorted(os.listdir(MODEL_OUTPUT_DIR)):
+        if f.endswith(".txt") or f.endswith(".onnx"):
+            print(f"  - {f}")
 
     return {
         "model_params": model_params,
         "val_metrics": val_metrics,
         "test_metrics": test_metrics,
         "feature_names": feature_names,
-        "model_path": MODEL_OUTPUT_PATH,
+        "model_path": model_output_path,
         "top_cuisines": top_cuisines,
     }
 

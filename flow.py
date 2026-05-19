@@ -1,4 +1,4 @@
-from metaflow import FlowSpec, step, pypi
+from metaflow import FlowSpec, step, pypi, catch, Parameter
 
 
 class SwiggyFlow(FlowSpec):
@@ -6,17 +6,27 @@ class SwiggyFlow(FlowSpec):
     End-to-end pipeline for the Swiggly restaurant dataset.
     1. data_tests      - reduce, sample, and validate with Great Expectations
     2. train_model     - train a LightGBM regressor and save the model artifact
-    3. test_robustness - evaluate the model for robustness against anomalies/perturbations
-    4. register_model  - version the model in MLflow (local tracking store)
+    3. register_model  - version the model in MLflow (local tracking store)
+    4. test_robustness - evaluate the model for robustness against anomalies/perturbations
     """
 
-    # start
+    induce_error = Parameter(
+        "induce_error",
+        help="Simulate a training error (insufficient data)",
+        default=False,
+    )
+
+    model_format = Parameter(
+        "model_format",
+        help="Model serialization format (text or onnx)",
+        default="text",
+    )
+
     @step
     def start(self):
         print("Starting Swiggy ML pipeline")
         self.next(self.data_tests)
 
-    # Step 1: Data preprocessing & Great Expectations tests
     @pypi(
         packages={
             "pandas": "2.3.3",
@@ -30,7 +40,7 @@ class SwiggyFlow(FlowSpec):
         - Create representative & remaining samples
         - Run Great Expectations null & threshold tests
         """
-        # Import inside the step so isolated env can resolve packages
+
         from main import (
             reduce_dataset,
             create_representative_sample_2,
@@ -64,19 +74,26 @@ class SwiggyFlow(FlowSpec):
             "pandas": "2.3.3",
             "lightgbm": "4.6.0",
             "scikit-learn": "1.8.0",
+            "onnxmltools": "1.16.0",
+            "onnx": "1.21.0",
         })
+    @catch(var="train_error")
     @step
     def train_model(self):
         """
         Train a LightGBM regressor to predict restaurant rating.
 
-        The trained model is serialized in LightGBM's native text format
-        (human-readable, language-agnostic, no pickle) and stored at
-        models/rating_predictor.txt.
+        Error Handling Choice:
+        We use Metaflow's @catch decorator to gracefully handle unexpected system errors
+        or data validation issues during training (e.g., if the training data size
+        drops below 1k records). If an exception is raised, the flow does not crash
+        immediately. Instead, the error is caught and stored in `self.train_error`.
+        Downstream steps then check for this error and can skip execution, ensuring
+        we don't deploy or test a broken model.
         """
         from train_model import main as run_training
 
-        results = run_training()
+        results = run_training(induce_error=self.induce_error, model_format=self.model_format)
 
         # Store training outputs as Metaflow artifacts for downstream steps
         self.model_params = results["model_params"]
@@ -85,40 +102,60 @@ class SwiggyFlow(FlowSpec):
         self.feature_names = results["feature_names"]
         self.model_path = results["model_path"]
         self.top_cuisines = results["top_cuisines"]
+        self.model_format_used = self.model_format
 
-        with open(self.model_path, "r") as f:
+        with open(self.model_path, "rb") as f:
             self.model_artifact = f.read()
 
         print(f"\nModel artifact saved to: {self.model_path}")
-        print(f"   Format: LightGBM native text (no pickle)")
-        print(f"   Size: {len(self.model_artifact):,} characters")
+        print(f"   Format: {self.model_format_used}")
+        print(f"   Size: {len(self.model_artifact):,} bytes")
 
-        self.next(self.test_robustness)
+        self.next(self.register_model)
 
-    # Step 3: Model robustness testing
+
+    # Should it pick the best performing saved model?
     @pypi(
         packages={
             "pandas": "2.3.3",
             "lightgbm": "4.6.0",
             "numpy": "2.4.4",
             "scikit-learn": "1.8.0",
+            "onnxruntime": "1.26.0",
         })
     @step
     def test_robustness(self):
+        
+        if getattr(self, "train_error", None):
+            print(f"Skipping robustness test due to training error: {self.train_error}")
+            self.next(self.end)
+            return
 
-        import lightgbm as lgb
         import pandas as pd
         import numpy as np
         from train_model import make_features
         
         print("\nTesting Model Robustness...")
         
-        booster = lgb.Booster(model_file=self.model_path)
-        
         # Load test data and engineer baseline features
         df_test = pd.read_csv("data/swiggy_test_sample.csv")
         X_test, _, _ = make_features(df_test, top_cuisines=self.top_cuisines, fit=False)
-        baseline_preds = booster.predict(X_test)
+
+        if self.model_format_used == "onnx":
+            import onnxruntime as rt
+            sess = rt.InferenceSession(self.model_path)
+            input_name = sess.get_inputs()[0].name
+            
+            def predict_model(X):
+                return sess.run(None, {input_name: X.values.astype(np.float32)})[0].flatten()
+        else:
+            import lightgbm as lgb
+            booster = lgb.Booster(model_file=self.model_path)
+            
+            def predict_model(X):
+                return booster.predict(X)
+        
+        baseline_preds = predict_model(X_test)
         
         # --------------------------------------------------------------
         # Test A: Extreme Outlier Bounds
@@ -129,7 +166,7 @@ class SwiggyFlow(FlowSpec):
         
         X_extreme = X_test.copy()
         X_extreme["cost"] = 10000000
-        extreme_preds = booster.predict(X_extreme)
+        extreme_preds = predict_model(X_extreme)
         
         out_of_bounds = np.sum((extreme_preds < 1.0) | (extreme_preds > 5.0))
         print(f"Predictions out of bounds [1.0, 5.0]: {out_of_bounds} / {len(extreme_preds)}")
@@ -145,10 +182,9 @@ class SwiggyFlow(FlowSpec):
         print("\n--- Test B: Invariance to Minor Perturbations ---")
         print("Expectation: Increasing the cost uniformly by 20% should not shift")
         print("the predicted rating by more than 0.2 stars on average.")
-        
         X_perturbed = X_test.copy()
         X_perturbed["cost"] = X_perturbed["cost"] * 1.20
-        perturbed_preds = booster.predict(X_perturbed)
+        perturbed_preds = predict_model(X_perturbed)
         
         mean_diff = np.mean(np.abs(perturbed_preds - baseline_preds))
         print(f"Mean absolute difference in predictions: {mean_diff:.4f} stars")
@@ -158,15 +194,17 @@ class SwiggyFlow(FlowSpec):
         else:
             print("Failed perturbation robustness test.")
             
-        self.next(self.register_model)
+        self.next(self.end)
 
     # ------------------------------------------------------------------
-    # Step 4: Model versioning with MLflow
+    # Step 3: Model versioning with MLflow
     # ------------------------------------------------------------------
     @pypi(
         packages={
             "mlflow": "3.12.0",
             "lightgbm": "4.6.0",
+            "onnx": "1.21.0",
+            "onnxruntime": "1.26.0",
         })
     @step
     def register_model(self):
@@ -174,22 +212,27 @@ class SwiggyFlow(FlowSpec):
         Version the trained model using MLflow local tracking.
 
         Logs hyperparameters, validation/test metrics, and the serialized
-        model artifact (LightGBM native text format) to a local MLflow
-        tracking store at mlruns/.
+        model artifact (LightGBM native text format or ONNX) to a local MLflow
+        tracking store at sqlite:///mlruns.db.
         """
+        if getattr(self, "train_error", None):
+            print(f"Skipping model registration due to training error: {self.train_error}")
+            self.next(self.test_robustness)
+            return
+
         import mlflow
         import mlflow.lightgbm
+        import mlflow.onnx
+        import onnx
         import lightgbm as lgb
+        import list_models
 
-        # Local file-based tracking store — no server required
-        mlflow.set_tracking_uri("file:./mlruns")
+        mlflow.set_tracking_uri("sqlite:///mlruns.db")
         mlflow.set_experiment("swiggly-rating-predictor")
 
         with mlflow.start_run() as run:
-            # Log hyperparameters
             mlflow.log_params(self.model_params)
 
-            # Log validation metrics (prefixed for clarity)
             mlflow.log_metrics({
                 f"val_{k}": v for k, v in self.val_metrics.items()
             })
@@ -202,29 +245,33 @@ class SwiggyFlow(FlowSpec):
             # Log the serialized model file as an artifact
             mlflow.log_artifact(self.model_path, artifact_path="model")
 
-            # Also log the model via MLflow's LightGBM integration
-            # for native model loading support
-            booster = lgb.Booster(model_file=self.model_path)
-            mlflow.lightgbm.log_model(
-                booster,
-                artifact_path="lightgbm_model",
-                input_example=None,
-            )
+            # Also log the model via MLflow's native integration
+            if self.model_format_used == "onnx":
+                onnx_model = onnx.load(self.model_path)
+                mlflow.onnx.log_model(
+                    onnx_model,
+                    artifact_path="onnx_model",
+                )
+            else:
+                booster = lgb.Booster(model_file=self.model_path)
+                mlflow.lightgbm.log_model(
+                    booster,
+                    artifact_path="lightgbm_model",
+                    input_example=None,
+                )
 
             self.mlflow_run_id = run.info.run_id
             self.mlflow_experiment_id = run.info.experiment_id
 
+
         print(f"\nModel registered in MLflow")
-        print(f"   Run ID       : {self.mlflow_run_id}")
-        print(f"   Experiment   : swiggly-rating-predictor")
-        print(f"   Tracking URI : file:./mlruns")
-        print(f"   View all runs: uv run python list_models.py")
+        print(f"Run ID       : {self.mlflow_run_id}")
+        print(f"Experiment   : swiggly-rating-predictor")
+        print(f"Tracking URI : sqlite:///mlruns.db")
+        print(f"View all runs: uv run python list_models.py")
 
-        self.next(self.end)
+        self.next(self.test_robustness)
 
-    # ------------------------------------------------------------------
-    # end
-    # ------------------------------------------------------------------
     @step
     def end(self):
         """Pipeline complete."""

@@ -7,7 +7,7 @@ Usage:
 
 import mlflow
 
-TRACKING_URI = "file:./mlruns"
+TRACKING_URI = "sqlite:///mlruns.db"
 EXPERIMENT_NAME = "swiggly-rating-predictor"
 
 
