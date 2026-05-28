@@ -6,7 +6,7 @@ Either using [UV](https://docs.astral.sh/uv/#highlights)
 > uv run main.py
 
 Or:
-> pip install -r requirements/requirements.txt 
+> pip install -r requirements.txt 
 > python main.py
 
 To run the project in a Docker container:
@@ -50,28 +50,3 @@ Unit test for threshold values check if the values in the rating column are with
 Unit test for rating count checks if all the rating count values in the remaining sample are within the unique set of rating count values from the representative sample, because there should be no new rating count categories in the remaining sample because the representative sample should capture all the rating count categories. There is no threshold on this test aswell because the rating count categories should be consistent throughout the dataset.
 
 
-
-## Swiggly ML Pipeline — Metaflow Flow
-
-The end-to-end machine learning pipeline is managed using **Metaflow** and consists of the following steps:
-1. **`data_tests`**: Preprocessing (sample reduction, stratification) + Great Expectations null & threshold validations.
-2. **`train_model`**: Trains a LightGBM regressor to predict restaurant ratings.
-3. **`register_model`**: Versions the trained model using MLflow local tracking.
-4. **`test_robustness`**: Evaluates model robustness against perturbations and extreme inputs.
-5. **`end`**: Wraps up pipeline run.
-
-To run the pipeline with the default native text model format:
-```bash
-uv run python flow.py --environment=pypi run --model_format text
-```
-
-To run the pipeline with ONNX model format:
-```bash
-uv run python flow.py --environment=pypi run --model_format onnx
-```
-
-
-to get an UI (local server) for ml flow runs and model versioning run:
-> uv run mlflow ui
-The UI will be available at http://localhost:5000.
----

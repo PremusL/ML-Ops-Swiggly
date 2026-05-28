@@ -70,8 +70,59 @@ To run the pipeline with ONNX model format:
 uv run python flow.py --environment=pypi run --model_format onnx
 ```
 
-
-to get an UI (local server) for ml flow runs and model versioning run:
-> uv run mlflow ui
-The UI will be available at http://localhost:5000.
 ---
+
+## Key Design Decisions
+
+### 1. Training Data Splitting Choice
+The model is trained strictly on the **remaining sample** (`swiggy_remaining_sample.csv`) and evaluated on the held-out validation set and city-stratified test sample (`swiggy_test_sample.csv`). We explicitly avoid training on the **representative sample**, since it contains the extreme highest/lowest ratings per city (designed for threshold test baselines). Training on such a dataset would heavily bias the regressor.
+
+### 2. Model Serialization Format
+The trained model can be serialized in two formats, selectable via the `--model_format` input parameter:
+* **Native Text Format (Default)**: Saved as `models/rating_predictor_lr<lr>_md<md>_est<est>.txt`. It is human-readable, language-agnostic, completely safe from arbitrary code execution exploits, and requires no Python runtime environment to load or execute predictions.
+* **ONNX Format**: Converted using `onnxmltools` and saved as `models/rating_predictor_lr<lr>_md<md>_est<est>.onnx`. This maximizes platform interoperability, allowing it to run via `onnxruntime` in C++, C#, Java, or JavaScript runtimes.
+
+### 3. Error Handling & Recovery Choice
+We use Metaflow's `@catch(var="train_error")` decorator on the `train_model` step to gracefully handle unexpected system crashes or data validation issues during training (such as the training dataset size falling below 1,000 records, which raises a `ValueError`). 
+If an exception is raised:
+* The error is captured and stored in `self.train_error` instead of crashing the flow.
+* Downstream steps (`register_model` and `test_robustness`) check for `self.train_error` and safely bypass execution. This ensures we never deploy, version, or test a corrupted model, maintaining pipeline stability.
+
+### 4. Model Versioning & Registry Store Choice
+We use **MLflow** for model registry and hyperparameter/metric tracking:
+* The tracking store is configured to write to a local directory: `mlruns` (`mlflow.set_tracking_uri("mlruns")`). This makes the registry fully portable and easily browseable using the MLflow UI (by running `uv run mlflow ui`).
+* If ONNX format is selected, it versions the model using `mlflow.onnx.log_model`. If native text format is selected, it uses `mlflow.lightgbm.log_model`.
+
+### 5. Model Robustness Testing Expectations
+We define model robustness as the capability to handle anomalous inputs and mild perturbations without predicting absurd values:
+* **Test A (Extreme Outliers)**: Expects that even under an absurdly inflated input cost (e.g., ₹10,000,000), predictions do not extrapolate wildly and remain strictly bound to the valid restaurant rating range of `[1.0, 5.0]`.
+* **Test B (Price Inflation Invariance)**: Expects that minor perturbations (e.g., a 20% uniform price inflation) shift the predicted ratings by less than 0.2 stars on average, as ratings should be more strongly driven by cuisine, city, and rating counts rather than minor price variances.
+
+
+
+
+
+
+
+
+
+
+
+
+def make_features
+    """
+    Transform raw columns into model-ready features.
+
+    Parameters
+    ----------
+    df : raw dataframe (must contain cost, rating_count, city, cuisine)
+    top_cuisines : pre-computed list of top cuisine tokens (pass from training
+                   when transforming test data)
+    fit : if True, derive top_cuisines from df; if False, reuse the passed list
+
+    Returns
+    -------
+    features : DataFrame with engineered columns
+    feature_names : list of feature column names
+    top_cuisines : the cuisine list (to be reused for test data)
+    """

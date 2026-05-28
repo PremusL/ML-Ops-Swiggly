@@ -1,10 +1,5 @@
-"""
-Train a LightGBM regressor to predict restaurant rating from the Swiggly dataset.
 
-Uses only the remaining sample (not the representative sample, which is biased
-toward extreme ratings by design). Evaluates on a held-out validation split and
-on the pre-built city-stratified test sample.
-"""
+# Train a LightGBM regressor to predict restaurant rating from the Swiggly dataset.
 
 import os
 import pandas as pd
@@ -12,11 +7,6 @@ import numpy as np
 import lightgbm as lgb
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error, root_mean_squared_error, r2_score
-
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
 
 TRAIN_DATA_PATH = "data/swiggy_remaining_sample.csv"
 TEST_DATA_PATH = "data/swiggy_test_sample.csv"
@@ -34,7 +24,7 @@ RATING_COUNT_ORDER = {
     "10K+ ratings": 7,
 }
 
-TOP_N_CUISINES = 30  # keep the 30 most frequent individual cuisines
+TOP_N_CUISINES = 30  # keep the 30 most frequent cuisines
 
 
 
@@ -53,31 +43,15 @@ def make_features(
     top_cuisines: list[str] | None = None,
     fit: bool = True,
 ) -> tuple[pd.DataFrame, list[str], list[str]]:
-    """
-    Transform raw columns into model-ready features.
-
-    Parameters
-    ----------
-    df : raw dataframe (must contain cost, rating_count, city, cuisine)
-    top_cuisines : pre-computed list of top cuisine tokens (pass from training
-                   when transforming test data)
-    fit : if True, derive top_cuisines from df; if False, reuse the passed list
-
-    Returns
-    -------
-    features : DataFrame with engineered columns
-    feature_names : list of feature column names
-    top_cuisines : the cuisine list (to be reused for test data)
-    """
     features = pd.DataFrame(index=df.index)
 
-    # 1. Cost (numeric, fill nulls with median)
+    # Cost (numeric, fill nulls with median)
     features["cost"] = df["cost"].fillna(df["cost"].median())
-    # 2. Rating count: ordinal
+    # Rating count: ordinal
     features["rating_count_ordinal"] = df["rating_count"].map(RATING_COUNT_ORDER).fillna(0).astype(int)
-    # 3. City: LightGBM categorical (integer codes)
+    # City: LightGBM categorical to integers
     features["city"] = df["city"].astype("category").cat.codes
-    # 4. Cuisine: multi-hot encoding of top-N tokens
+    # Cuisine: multi-hot encoding of top-N tokens
     if fit:
         top_cuisines = _extract_individual_cuisines(df["cuisine"])
     assert top_cuisines is not None
@@ -91,12 +65,9 @@ def make_features(
     return features, feature_names, top_cuisines
 
 
-# ---------------------------------------------------------------------------
-# Evaluation
-# ---------------------------------------------------------------------------
 
 def evaluate(y_true: np.ndarray, y_pred: np.ndarray, label: str = "") -> dict:
-    """Print and return regression metrics."""
+    # Print and return regression metrics.
     mae = mean_absolute_error(y_true, y_pred)
     rmse = root_mean_squared_error(y_true, y_pred)
     r2 = r2_score(y_true, y_pred)
@@ -112,13 +83,11 @@ def evaluate(y_true: np.ndarray, y_pred: np.ndarray, label: str = "") -> dict:
     return {"mae": mae, "rmse": rmse, "r2": r2}
 
 
-# ---------------------------------------------------------------------------
-# Main training pipeline
-# ---------------------------------------------------------------------------
+
+# Main training 
 
 def main(induce_error: bool = False, model_format: str = "text"):
 
-    print("Loading training data ...")
     df_train_full = pd.read_csv(TRAIN_DATA_PATH)
 
     if induce_error:
@@ -146,10 +115,10 @@ def main(induce_error: bool = False, model_format: str = "text"):
     print("\nTraining LightGBM regressor ...")
 
     model_params = {
-        "n_estimators": 500,
-        "learning_rate": 0.05,
+        "n_estimators": 550,
+        "learning_rate": 0.02,
         "max_depth": 6,
-        "num_leaves": 31,
+        "num_leaves": 32,
         "subsample": 0.8,
         "colsample_bytree": 0.8,
         "reg_alpha": 0.1,
@@ -169,7 +138,7 @@ def main(induce_error: bool = False, model_format: str = "text"):
     y_val_pred = model.predict(X_val)
     val_metrics = evaluate(y_val, y_val_pred, label="Validation")
 
-    # Evaluate on test set
+    # Evaluate on test
     print("\nLoading test data ...")
     df_test = pd.read_csv(TEST_DATA_PATH)
     df_test = df_test[pd.to_numeric(df_test[TARGET], errors="coerce").notna()]

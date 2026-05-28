@@ -7,7 +7,7 @@ Usage:
 
 import mlflow
 
-TRACKING_URI = "sqlite:///mlruns.db"
+TRACKING_URI = "mlruns"
 EXPERIMENT_NAME = "swiggly-rating-predictor"
 
 
@@ -86,8 +86,7 @@ def main():
         print(f"    Artifacts  : {artifact_uri}")
         print()
 
-    print(f"  Tip: Run 'uv run mlflow ui --backend-store-uri {TRACKING_URI}' "
-          f"to browse in the web UI.\n")
+    print(f"  Tip: Run 'uv run mlflow ui' to browse in the web UI.\n")
 
 
 if __name__ == "__main__":
